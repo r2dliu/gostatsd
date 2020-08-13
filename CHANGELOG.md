@@ -1,3 +1,8 @@
+Next
+----
+- Refactor the cloud handler to use the modern pipeline.  This removes the `cloudprovider.items_queued` metric, and now
+  tracks the absolute number of hosts to look up, regardless of type.
+
 29.0.0
 ------
 - Support for ARM64 docker image
