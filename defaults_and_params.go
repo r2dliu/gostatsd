@@ -13,7 +13,7 @@ import (
 )
 
 // DefaultBackends is the list of default backends' names.
-var DefaultBackends = []string{"graphite"}
+var DefaultBackends = []string{"sqlserver"}
 
 // DefaultMaxReaders is the default number of socket reading goroutines.
 var DefaultMaxReaders = minInt(8, runtime.NumCPU())

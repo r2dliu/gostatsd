@@ -13,6 +13,7 @@ import (
 	"github.com/atlassian/gostatsd/pkg/backends/influxdb"
 	"github.com/atlassian/gostatsd/pkg/backends/newrelic"
 	"github.com/atlassian/gostatsd/pkg/backends/null"
+	"github.com/atlassian/gostatsd/pkg/backends/sqlserver"
 	"github.com/atlassian/gostatsd/pkg/backends/statsdaemon"
 	"github.com/atlassian/gostatsd/pkg/backends/stdout"
 	"github.com/atlassian/gostatsd/pkg/transport"
@@ -20,6 +21,7 @@ import (
 
 // All known backends.
 var backends = map[string]gostatsd.BackendFactory{
+	sqlserver.BackendName:   sqlserver.NewClientFromViper,
 	datadog.BackendName:     datadog.NewClientFromViper,
 	graphite.BackendName:    graphite.NewClientFromViper,
 	influxdb.BackendName:    influxdb.NewClientFromViper,

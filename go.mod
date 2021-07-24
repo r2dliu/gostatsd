@@ -6,6 +6,7 @@ require (
 	github.com/ash2k/stager v0.0.0-20170622123058-6e9c7b0eacd4
 	github.com/aws/aws-sdk-go v1.28.13
 	github.com/cenkalti/backoff v2.2.1+incompatible
+	github.com/denisenkom/go-mssqldb v0.10.0 // indirect
 	github.com/dvyukov/go-fuzz v0.0.0-20191206100749-a378175e205c
 	github.com/elazarl/go-bindata-assetfs v1.0.0 // indirect
 	github.com/githubnemo/CompileDaemon v1.0.0
