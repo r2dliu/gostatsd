@@ -14,12 +14,13 @@ import (
 	"log"
 	"time"
 
-	"github.com/atlassian/gostatsd"
-	"github.com/atlassian/gostatsd/internal/util"
-	"github.com/atlassian/gostatsd/pkg/transport"
 	_ "github.com/denisenkom/go-mssqldb"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+
+	"github.com/atlassian/gostatsd"
+	"github.com/atlassian/gostatsd/internal/util"
+	"github.com/atlassian/gostatsd/pkg/transport"
 )
 
 const (
@@ -199,6 +200,8 @@ func (client *Client) preparePayload(metrics *gostatsd.MetricMap, ts time.Time) 
 
 // SendEvent discards events.
 func (client *Client) SendEvent(ctx context.Context, e *gostatsd.Event) error {
+	fmt.Printf("calling send event\n")
+	fmt.Print(e)
 	return nil
 }
 
