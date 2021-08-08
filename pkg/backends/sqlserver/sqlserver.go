@@ -15,6 +15,7 @@ import (
 	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
+	mssql "github.com/denisenkom/go-mssqldb"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 
@@ -100,10 +101,85 @@ func (client *Client) Run(ctx context.Context) {
 	// client.sender.Run(ctx)
 }
 
+func commitBulkInsert(stmt *sql.Stmt, txn *sql.Tx) int64 {
+	result, err := stmt.Exec()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = stmt.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = txn.Commit()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	rowCount, _ := result.RowsAffected()
+	return rowCount
+}
+
 // SendMetricsAsync flushes the metrics to the Graphite server, preparing payload synchronously but doing the send asynchronously.
 func (client *Client) SendMetricsAsync(ctx context.Context, metrics *gostatsd.MetricMap, cb gostatsd.SendCallback) {
 	fmt.Printf("calling send metrics async\n")
 	fmt.Print(metrics)
+
+	txn, err := client.dbHandle.Begin()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	stmt, err := txn.Prepare(mssql.CopyIn("counters", mssql.BulkOptions{}, "timestamp", "name", "value"))
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	metrics.Counters.Each(func(key, tagsKey string, counter gostatsd.Counter) {
+		_, err = stmt.Exec(counter.Timestamp, counter.Tags.String(), counter.Value)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+	})
+
+	commitBulkInsert(stmt, txn)
+
+	stmt, err = txn.Prepare(mssql.CopyIn("gauges", mssql.BulkOptions{}, "timestamp", "name", "value"))
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	metrics.Gauges.Each(func(key, tagsKey string, gauge gostatsd.Gauge) {
+		_, err = stmt.Exec(gauge.Timestamp, gauge.Tags.String(), gauge.Value)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+	})
+
+	stmt, err = txn.Prepare(mssql.CopyIn("sets", mssql.BulkOptions{}, "timestamp", "name", "value"))
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	metrics.Sets.Each(func(key, tagsKey string, set gostatsd.Set) {
+		for k := range set.Values {
+			_, err = stmt.Exec(set.Timestamp, set.Tags.String(), k)
+			if err != nil {
+				log.Fatal(err.Error())
+			}
+		}
+	})
+
+	commitBulkInsert(stmt, txn)
+
+	// TODO: decide how to store timer metrics
+	// metrics.Timers.Each(func(key, tagsKey string, timer gostatsd.Timer) {
+	// 	_, err = stmt.Exec(timer.Timestamp, timer.Tags.String(), timer.Values)
+	// 	if err != nil {
+	// 		log.Fatal(err.Error())
+	// 	}
+	// })
 	// buf := client.preparePayload(metrics, time.Now())
 	// sink := make(chan *bytes.Buffer, 1)
 	// sink <- buf
