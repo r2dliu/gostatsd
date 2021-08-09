@@ -14,7 +14,6 @@ import (
 	"log"
 	"time"
 
-	_ "github.com/denisenkom/go-mssqldb"
 	mssql "github.com/denisenkom/go-mssqldb"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
@@ -101,18 +100,13 @@ func (client *Client) Run(ctx context.Context) {
 	// client.sender.Run(ctx)
 }
 
-func commitBulkInsert(stmt *sql.Stmt, txn *sql.Tx) int64 {
+func executeStatement(stmt *sql.Stmt) int64 {
 	result, err := stmt.Exec()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	err = stmt.Close()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = txn.Commit()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -143,7 +137,7 @@ func (client *Client) SendMetricsAsync(ctx context.Context, metrics *gostatsd.Me
 		}
 	})
 
-	commitBulkInsert(stmt, txn)
+	executeStatement(stmt)
 
 	stmt, err = txn.Prepare(mssql.CopyIn("gauges", mssql.BulkOptions{}, "timestamp", "name", "value"))
 	if err != nil {
@@ -156,6 +150,8 @@ func (client *Client) SendMetricsAsync(ctx context.Context, metrics *gostatsd.Me
 			log.Fatal(err.Error())
 		}
 	})
+
+	executeStatement(stmt)
 
 	stmt, err = txn.Prepare(mssql.CopyIn("sets", mssql.BulkOptions{}, "timestamp", "name", "value"))
 	if err != nil {
@@ -171,7 +167,7 @@ func (client *Client) SendMetricsAsync(ctx context.Context, metrics *gostatsd.Me
 		}
 	})
 
-	commitBulkInsert(stmt, txn)
+	executeStatement(stmt)
 
 	// TODO: decide how to store timer metrics
 	// metrics.Timers.Each(func(key, tagsKey string, timer gostatsd.Timer) {
@@ -190,9 +186,14 @@ func (client *Client) SendMetricsAsync(ctx context.Context, metrics *gostatsd.Me
 	// 	cb([]error{ctx.Err()})
 	// case client.sender.Sink <- sender.Stream{Ctx: ctx, Cb: cb, Buf: sink}:
 	// }
+
+	err = txn.Commit()
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
-func setupDatabase(conn *sql.DB) bool {
+func setupDatabase(conn *sql.DB) {
 	for table, script := range creationScriptsByTable {
 		rows, err := conn.Query(fmt.Sprintf("SELECT * FROM statsd.dbo.%s", table))
 		if err != nil { // table does not exist
@@ -204,7 +205,6 @@ func setupDatabase(conn *sql.DB) bool {
 			rows.Close()
 		}
 	}
-	return false
 }
 
 func (client *Client) preparePayload(metrics *gostatsd.MetricMap, ts time.Time) *bytes.Buffer {
@@ -366,17 +366,14 @@ func NewClient(
 	setupDatabase(conn)
 	fmt.Printf("txn: %v\n", txn)
 	if err != nil {
+		fmt.Printf("wtf")
 		log.Fatal(err)
 	}
-	// stmt, err := txn.Prepare(mssql.CopyIn("test_table", mssql.BulkOptions{}, "test_varchar", "test_nvarchar", "test_float", "test_bigint"))
-	if err != nil {
-		return &Client{
-			dbHandle: *conn,
-			dbName:   database,
-		}, nil
-	}
 
-	return nil, err
+	return &Client{
+		dbHandle: *conn,
+		dbName:   database,
+	}, nil
 }
 
 // func combine(prefix, suffix string) string {
