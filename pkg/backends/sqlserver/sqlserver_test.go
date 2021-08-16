@@ -21,6 +21,7 @@ func TestPreparePayloadHistogram(t *testing.T) {
 }
 
 func sortLines(s string) string {
+	return ""
 }
 
 func TestSendMetricsAsync(t *testing.T) {

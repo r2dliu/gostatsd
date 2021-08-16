@@ -7,7 +7,6 @@ package sqlserver
 // -> check existence of tables, maybe validate with some same queries (SET PARSEONLY ON)
 // ->
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -26,7 +25,7 @@ import (
 const (
 	// BackendName is the name of this backend.
 	BackendName = "sqlserver"
-	// DefaultAddress is the default address of Graphite server.
+	// DefaultAddress is the default address of SQL Server instance.
 	DefaultAddress  = "localhost"
 	DefaultPort     = 1433
 	DefaultUser     = ""
@@ -56,37 +55,43 @@ var creationScriptsByTable = map[string]string{
 	"counters_statistics": `
 		DROP TABLE IF EXISTS counters_statistics;
 		CREATE TABLE counters_statistics (
+			id BIGINT NOT NULL IDENTITY,
 			"timestamp" BIGINT NOT NULL,
-			"name" varchar(255) NOT NULL,
+			"name" VARCHAR(255) NOT NULL,
 			value BIGINT NOT NULL,
-			CONSTRAINT counters_statistics_pkey PRIMARY KEY ("timestamp", name)
-		)`,
+			CONSTRAINT counters_statistics_pkey PRIMARY KEY (id)
+		);
+		CREATE INDEX counters_statistics_timestamp_IDX ON counters_statistics ([timestamp], name)`,
 	"gauges_statistics": `
 		DROP TABLE IF EXISTS gauges_statistics;
 		CREATE TABLE gauges_statistics (
+			id BIGINT NOT NULL IDENTITY,
 			"timestamp" BIGINT NOT NULL,
-			"name" varchar(255) NOT NULL,
-			value BIGINT NOT NULL,
-			CONSTRAINT gauges_statistics_pkey PRIMARY KEY ("timestamp", name)
-		)`,
+			"name" VARCHAR(255) NOT NULL,
+			value DECIMAL NOT NULL,
+			CONSTRAINT gauges_statistics_pkey PRIMARY KEY (id)
+		);
+		CREATE INDEX gauges_statistics_timestamp_IDX ON gauges_statistics ([timestamp], name)`,
 	"sets_statistics": `
 		DROP TABLE IF EXISTS sets_statistics;
 		CREATE TABLE sets_statistics (
-			"timestamp" BIGINT NOT NULL,
-			"name" varchar(255) NOT NULL,
-			value BIGINT NOT NULL,
-			CONSTRAINT sets_statistics_pkey PRIMARY KEY ("timestamp", name)
-		)`,
-	"timers_statistics": `
-		DROP TABLE IF EXISTS timers_statistics;
-
-		CREATE TABLE timers_statistics (
 			id BIGINT NOT NULL IDENTITY,
 			"timestamp" BIGINT NOT NULL,
-			"name" varchar(255) NOT NULL,
+			"name" VARCHAR(255) NOT NULL,
+			value BIGINT NOT NULL,
+			CONSTRAINT sets_statistics_pkey PRIMARY KEY (id)
+		);
+		CREATE INDEX sets_statistics_timestamp_IDX ON sets_statistics ([timestamp], name)`,
+	"timers_statistics": `
+		DROP TABLE IF EXISTS timers_statistics;
+		CREATE TABLE timers_statistics (
+			id BIGINT NOT NULL IDENTITY,
+			"timestamp" DECIMAL NOT NULL,
+			"name" VARCHAR(255) NOT NULL,
 			value BIGINT NOT NULL,
 			CONSTRAINT timers_statistics_pkey PRIMARY KEY (id)
-		)`,
+		);
+		CREATE INDEX timers_statistics_timestamp_IDX ON timers_statistics ([timestamp], name)`,
 }
 
 // Client is an object that is used to send messages to a Graphite server's TCP interface.
@@ -100,19 +105,16 @@ func (client *Client) Run(ctx context.Context) {
 	// client.sender.Run(ctx)
 }
 
-func executeStatement(stmt *sql.Stmt) int64 {
-	result, err := stmt.Exec()
+func executeStatement(stmt *sql.Stmt, errs *[]error) {
+	_, err := stmt.Exec()
 	if err != nil {
-		log.Fatal(err)
+		*errs = append(*errs, err)
 	}
 
-	err = stmt.Close()
-	if err != nil {
-		log.Fatal(err)
+	err2 := stmt.Close()
+	if err2 != nil {
+		*errs = append(*errs, err2)
 	}
-
-	rowCount, _ := result.RowsAffected()
-	return rowCount
 }
 
 // SendMetricsAsync flushes the metrics to the Graphite server, preparing payload synchronously but doing the send asynchronously.
@@ -120,77 +122,85 @@ func (client *Client) SendMetricsAsync(ctx context.Context, metrics *gostatsd.Me
 	fmt.Printf("calling send metrics async\n")
 	fmt.Print(metrics)
 
-	txn, err := client.dbHandle.Begin()
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	stmt, err := txn.Prepare(mssql.CopyIn("counters", mssql.BulkOptions{}, "timestamp", "name", "value"))
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	metrics.Counters.Each(func(key, tagsKey string, counter gostatsd.Counter) {
-		_, err = stmt.Exec(counter.Timestamp, counter.Tags.String(), counter.Value)
+	tryInsertMetrics := func() []error {
+		errs := make([]error, 0)
+		txn, err := client.dbHandle.Begin()
 		if err != nil {
-			log.Fatal(err.Error())
+			errs = append(errs, err)
+			return errs
 		}
-	})
 
-	executeStatement(stmt)
-
-	stmt, err = txn.Prepare(mssql.CopyIn("gauges", mssql.BulkOptions{}, "timestamp", "name", "value"))
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	metrics.Gauges.Each(func(key, tagsKey string, gauge gostatsd.Gauge) {
-		_, err = stmt.Exec(gauge.Timestamp, gauge.Tags.String(), gauge.Value)
+		stmt, err := txn.Prepare(mssql.CopyIn("counters_statistics", mssql.BulkOptions{}, "timestamp", "name", "value"))
 		if err != nil {
-			log.Fatal(err.Error())
+			errs = append(errs, err)
+		} else {
+			metrics.Counters.Each(func(key, tagsKey string, counter gostatsd.Counter) {
+				_, err = stmt.Exec(counter.Timestamp, key, counter.Value)
+				if err != nil {
+					errs = append(errs, err)
+				}
+			})
+
+			executeStatement(stmt, &errs)
 		}
-	})
 
-	executeStatement(stmt)
+		// stmt, err = txn.Prepare(mssql.CopyIn("gauges_statistics", mssql.BulkOptions{}, "timestamp", "name", "value"))
+		// if err != nil {
+		// 	errs = append(errs, err)
+		// } else {
+		// 	metrics.Gauges.Each(func(key, tagsKey string, gauge gostatsd.Gauge) {
+		// 		_, err = stmt.Exec(gauge.Timestamp, gauge.Tags.String(), gauge.Value)
+		// 		if err != nil {
+		// 			errs = append(errs, err)
+		// 		}
+		// 	})
 
-	stmt, err = txn.Prepare(mssql.CopyIn("sets", mssql.BulkOptions{}, "timestamp", "name", "value"))
-	if err != nil {
-		log.Fatal(err.Error())
+		// 	executeStatement(stmt, &errs)
+		// }
+
+		stmt, err = txn.Prepare(mssql.CopyIn("sets_statistics", mssql.BulkOptions{}, "timestamp", "name", "value"))
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			metrics.Sets.Each(func(key, tagsKey string, set gostatsd.Set) {
+				for k := range set.Values {
+					_, err = stmt.Exec(set.Timestamp, set.Tags.String(), k)
+					if err != nil {
+						errs = append(errs, err)
+					}
+				}
+			})
+
+			executeStatement(stmt, &errs)
+		}
+
+		// TODO: decide how to store timer metrics
+		// metrics.Timers.Each(func(key, tagsKey string, timer gostatsd.Timer) {
+		// 	_, err = stmt.Exec(timer.Timestamp, timer.Tags.String(), timer.Values)
+		// 	if err != nil {
+		// 		log.Fatal(err.Error())
+		// 	}
+		// })
+		// buf := client.preparePayload(metrics, time.Now())
+		// sink := make(chan *bytes.Buffer, 1)
+		// sink <- buf
+		// close(sink)
+		// select {
+		// case <-ctx.Done():
+		// 	client.sender.PutBuffer(buf)
+		// 	cb([]error{ctx.Err()})
+		// case client.sender.Sink <- sender.Stream{Ctx: ctx, Cb: cb, Buf: sink}:
+		// }
+		err = txn.Commit()
+		if err != nil {
+			log.Fatal(err)
+		}
+		return errs
 	}
 
-	metrics.Sets.Each(func(key, tagsKey string, set gostatsd.Set) {
-		for k := range set.Values {
-			_, err = stmt.Exec(set.Timestamp, set.Tags.String(), k)
-			if err != nil {
-				log.Fatal(err.Error())
-			}
-		}
-	})
+	errs := tryInsertMetrics()
 
-	executeStatement(stmt)
-
-	// TODO: decide how to store timer metrics
-	// metrics.Timers.Each(func(key, tagsKey string, timer gostatsd.Timer) {
-	// 	_, err = stmt.Exec(timer.Timestamp, timer.Tags.String(), timer.Values)
-	// 	if err != nil {
-	// 		log.Fatal(err.Error())
-	// 	}
-	// })
-	// buf := client.preparePayload(metrics, time.Now())
-	// sink := make(chan *bytes.Buffer, 1)
-	// sink <- buf
-	// close(sink)
-	// select {
-	// case <-ctx.Done():
-	// 	client.sender.PutBuffer(buf)
-	// 	cb([]error{ctx.Err()})
-	// case client.sender.Sink <- sender.Stream{Ctx: ctx, Cb: cb, Buf: sink}:
-	// }
-
-	err = txn.Commit()
-	if err != nil {
-		log.Fatal(err)
-	}
+	cb(errs)
 }
 
 func setupDatabase(conn *sql.DB) {
@@ -205,73 +215,6 @@ func setupDatabase(conn *sql.DB) {
 			rows.Close()
 		}
 	}
-}
-
-func (client *Client) preparePayload(metrics *gostatsd.MetricMap, ts time.Time) *bytes.Buffer {
-	// buf := client.sender.GetBuffer()
-	// now := ts.Unix()
-	// if client.legacyNamespace {
-	// 	metrics.Counters.Each(func(key, tagsKey string, counter gostatsd.Counter) {
-	// 		_, _ = fmt.Fprintf(buf, "%s %d %d\n", client.prepareName("stats_counts", key, "", counter.Source, counter.Tags), counter.Value, now)
-	// 		_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.counterNamespace, key, "", counter.Source, counter.Tags), counter.PerSecond, now)
-	// 	})
-	// } else {
-	// 	metrics.Counters.Each(func(key, tagsKey string, counter gostatsd.Counter) {
-	// 		_, _ = fmt.Fprintf(buf, "%s %d %d\n", client.prepareName(client.counterNamespace, key, "count", counter.Source, counter.Tags), counter.Value, now)
-	// 		_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.counterNamespace, key, "rate", counter.Source, counter.Tags), counter.PerSecond, now)
-	// 	})
-	// }
-	// metrics.Timers.Each(func(key, tagsKey string, timer gostatsd.Timer) {
-	// 	if timer.Histogram != nil {
-	// 		for histogramThreshold, count := range timer.Histogram {
-	// 			bucketTag := "le:+Inf"
-	// 			if !math.IsInf(float64(histogramThreshold), 1) {
-	// 				bucketTag = "le:" + strconv.FormatFloat(float64(histogramThreshold), 'f', -1, 64)
-	// 			}
-	// 			newTags := timer.Tags.Concat(gostatsd.Tags{bucketTag})
-	// 			_, _ = fmt.Fprintf(buf, "%s %d %d\n", client.prepareName(client.counterNamespace, key, "histogram", timer.Source, newTags), count, now)
-	// 		}
-	// 	} else {
-	// 		if !client.disabledSubtypes.Lower {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, "lower", timer.Source, timer.Tags), timer.Min, now)
-	// 		}
-	// 		if !client.disabledSubtypes.Upper {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, "upper", timer.Source, timer.Tags), timer.Max, now)
-	// 		}
-	// 		if !client.disabledSubtypes.Count {
-	// 			_, _ = fmt.Fprintf(buf, "%s %d %d\n", client.prepareName(client.timerNamespace, key, "count", timer.Source, timer.Tags), timer.Count, now)
-	// 		}
-	// 		if !client.disabledSubtypes.CountPerSecond {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, "count_ps", timer.Source, timer.Tags), timer.PerSecond, now)
-	// 		}
-	// 		if !client.disabledSubtypes.Mean {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, "mean", timer.Source, timer.Tags), timer.Mean, now)
-	// 		}
-	// 		if !client.disabledSubtypes.Median {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, "median", timer.Source, timer.Tags), timer.Median, now)
-	// 		}
-	// 		if !client.disabledSubtypes.StdDev {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, "std", timer.Source, timer.Tags), timer.StdDev, now)
-	// 		}
-	// 		if !client.disabledSubtypes.Sum {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, "sum", timer.Source, timer.Tags), timer.Sum, now)
-	// 		}
-	// 		if !client.disabledSubtypes.SumSquares {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, "sum_squares", timer.Source, timer.Tags), timer.SumSquares, now)
-	// 		}
-	// 		for _, pct := range timer.Percentiles {
-	// 			_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.timerNamespace, key, pct.Str, timer.Source, timer.Tags), pct.Float, now)
-	// 		}
-	// 	}
-	// })
-	// metrics.Gauges.Each(func(key, tagsKey string, gauge gostatsd.Gauge) {
-	// 	_, _ = fmt.Fprintf(buf, "%s %f %d\n", client.prepareName(client.gaugesNamespace, key, "", gauge.Source, gauge.Tags), gauge.Value, now)
-	// })
-	// metrics.Sets.Each(func(key, tagsKey string, set gostatsd.Set) {
-	// 	_, _ = fmt.Fprintf(buf, "%s %d %d\n", client.prepareName(client.setsNamespace, key, "", set.Source, set.Tags), len(set.Values), now)
-	// })
-	// return buf
-	return nil
 }
 
 // SendEvent discards events.
@@ -311,7 +254,7 @@ func NewClientFromViper(v *viper.Viper, logger logrus.FieldLogger, pool *transpo
 	)
 }
 
-// NewClient constructs a Graphite backend object.
+// NewClient constructs a SQL Server backend object.
 func NewClient(
 	address string,
 	port int,

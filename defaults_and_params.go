@@ -92,7 +92,7 @@ const (
 	// DefaultTimerHistogramLimit default upper limit for timer histograms (effectively unlimited)
 	DefaultTimerHistogramLimit = math.MaxUint32
 	// DefaultLogRawMetric is the default value for whether to log the metrics received from network
-	DefaultLogRawMetric = false
+	DefaultLogRawMetric = true
 )
 
 const (
