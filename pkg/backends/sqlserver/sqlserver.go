@@ -241,6 +241,14 @@ func NewClientFromViper(v *viper.Viper, logger logrus.FieldLogger, pool *transpo
 	g.SetDefault("dial_timeout", DefaultDialTimeout)
 	g.SetDefault("write_timeout", DefaultWriteTimeout)
 
+	// Sql Server Config Defaults & Recommendations
+	v.Set("statser-type", "null")
+	v.SetDefault("flush-interval", "10s")
+	v.Set("expiry-interval", "-1s")
+	if v.GetString("statser-type") == "null" {
+		logger.Info("Internal metrics OFF if using sql server. Metrics expire instantly.")
+	}
+
 	return NewClient(
 		g.GetString("address"),
 		g.GetInt("port"),
